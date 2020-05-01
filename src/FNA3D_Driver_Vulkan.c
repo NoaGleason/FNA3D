@@ -49,6 +49,7 @@ typedef struct VulkanEffect VulkanEffect;
 typedef struct PipelineHashMap PipelineHashMap;
 typedef struct RenderPassHashMap RenderPassHashMap;
 typedef struct FramebufferHashMap FramebufferHashMap;
+typedef struct SamplerStateHashMap SamplerStateHashMap;
 
 typedef struct SurfaceFormatMapping {
 	VkFormat formatColor;
@@ -115,6 +116,12 @@ struct FramebufferHashMap
 {
 	RenderPassHash key;
 	VkFramebuffer value;
+};
+
+struct SamplerStateHashMap
+{
+	StateHash key;
+	VkSampler value;
 };
 
 struct VulkanEffect {
@@ -258,6 +265,7 @@ typedef struct FNAVulkanRenderer
 	PipelineHashMap *pipelineHashMap;
 	RenderPassHashMap *renderPassHashMap;
 	FramebufferHashMap *framebufferHashMap;
+	SamplerStateHashMap *samplerStateHashMap;
 
 	VkFence renderQueueFence;
 	VkSemaphore imageAvailableSemaphore;
@@ -378,6 +386,12 @@ static VkRenderPass FetchRenderPass(
 static VkFramebuffer FetchFramebuffer(
 	FNAVulkanRenderer *renderer,
 	VkRenderPass renderPass
+);
+
+static VkSampler FetchSamplerState(
+	FNAVulkanRenderer *renderer,
+	FNA3D_SamplerState *samplerState,
+	uint8_t hasMipmaps
 );
 
 static PipelineHash GetPipelineHash(
@@ -715,6 +729,52 @@ static VkPrimitiveTopology XNAToVK_Topology[] =
 	VK_PRIMITIVE_TOPOLOGY_LINE_LIST,		/* FNA3D_PRIMITIVETYPE_LINELIST */
 	VK_PRIMITIVE_TOPOLOGY_LINE_STRIP,		/* FNA3D_PRIMITIVETYPE_LINESTRIP */
 	VK_PRIMITIVE_TOPOLOGY_POINT_LIST		/* FNA3D_PRIMITIVETYPE_POINTLIST_EXT */
+};
+
+static VkSamplerAddressMode XNAToVK_SamplerAddressMode[] =
+{
+	VK_SAMPLER_ADDRESS_MODE_REPEAT, 			/* FNA3D_TEXTUREADDRESSMODE_WRAP */
+	VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 		/* FNA3D_TEXTUREADDRESSMODE_CLAMP */
+	VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT 	/* FNA3D_TEXTUREADDRESSMODE_MIRROR */
+};
+
+static VkFilter XNAToVK_MagFilter[] = 
+{
+	VK_FILTER_LINEAR, 	/* FNA3D_TEXTUREFILTER_LINEAR */
+	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_POINT */
+	VK_FILTER_LINEAR, 	/* FNA3D_TEXTUREFILTER_ANISOTROPIC */
+	VK_FILTER_LINEAR,	/* FNA3D_TEXTUREFILTER_LINEAR_MIPPOINT */
+	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_POINT_MIPLINEAR */
+	VK_FILTER_NEAREST,	/* FNA3D_TEXTUREFILTER_MINLINEAR_MAGPOINT_MIPLINEAR */
+	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_MINLINEAR_MAGPOINT_MIPPOINT */
+	VK_FILTER_LINEAR, 	/* FNA3D_TEXTUREFILTER_MINPOINT_MAGLINEAR_MIPLINEAR */
+	VK_FILTER_LINEAR, 	/* FNA3D_TEXTUREFILTER_MINPOINT_MAGLINEAR_MIPPOINT */
+};
+
+static VkSamplerMipmapMode XNAToVK_MipFilter[] = 
+{
+	VK_SAMPLER_MIPMAP_MODE_LINEAR, 	/* FNA3D_TEXTUREFILTER_LINEAR */
+	VK_SAMPLER_MIPMAP_MODE_NEAREST, /* FNA3D_TEXTUREFILTER_POINT */
+	VK_SAMPLER_MIPMAP_MODE_LINEAR, 	/* FNA3D_TEXTUREFILTER_ANISOTROPIC */
+	VK_SAMPLER_MIPMAP_MODE_NEAREST,	/* FNA3D_TEXTUREFILTER_LINEAR_MIPPOINT */
+	VK_SAMPLER_MIPMAP_MODE_LINEAR, 	/* FNA3D_TEXTUREFILTER_POINT_MIPLINEAR */
+	VK_SAMPLER_MIPMAP_MODE_LINEAR,	/* FNA3D_TEXTUREFILTER_MINLINEAR_MAGPOINT_MIPLINEAR */
+	VK_SAMPLER_MIPMAP_MODE_NEAREST, /* FNA3D_TEXTUREFILTER_MINLINEAR_MAGPOINT_MIPPOINT */
+	VK_SAMPLER_MIPMAP_MODE_LINEAR, 	/* FNA3D_TEXTUREFILTER_MINPOINT_MAGLINEAR_MIPLINEAR */
+	VK_SAMPLER_MIPMAP_MODE_NEAREST, /* FNA3D_TEXTUREFILTER_MINPOINT_MAGLINEAR_MIPPOINT */
+};
+
+static VkFilter XNAToVK_MinFilter[] = 
+{
+	VK_FILTER_LINEAR, 	/* FNA3D_TEXTUREFILTER_LINEAR */
+	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_POINT */
+	VK_FILTER_LINEAR, 	/* FNA3D_TEXTUREFILTER_ANISOTROPIC */
+	VK_FILTER_LINEAR,	/* FNA3D_TEXTUREFILTER_LINEAR_MIPPOINT */
+	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_POINT_MIPLINEAR */
+	VK_FILTER_LINEAR,	/* FNA3D_TEXTUREFILTER_MINLINEAR_MAGPOINT_MIPLINEAR */
+	VK_FILTER_LINEAR, 	/* FNA3D_TEXTUREFILTER_MINLINEAR_MAGPOINT_MIPPOINT */
+	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_MINPOINT_MAGLINEAR_MIPLINEAR */
+	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_MINPOINT_MAGLINEAR_MIPPOINT */
 };
 
 static float ColorConvert(uint8_t colorValue)
@@ -2044,6 +2104,60 @@ static VkFramebuffer FetchFramebuffer(
 	return framebuffer;
 }
 
+static VkSampler FetchSamplerState(
+	FNAVulkanRenderer *renderer,
+	FNA3D_SamplerState *samplerState,
+	uint8_t hasMipmaps
+) {
+	StateHash hash;
+	VkSampler state;
+
+	hash = GetSamplerStateHash(*samplerState);
+	state = hmget(renderer->samplerStateHashMap, hash);
+	if (state != NULL)
+	{
+		return state;
+	}
+
+	VkSamplerCreateInfo createInfo = {
+		VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO
+	};
+
+	createInfo.addressModeU = XNAToVK_SamplerAddressMode[samplerState->addressU];
+	createInfo.addressModeV = XNAToVK_SamplerAddressMode[samplerState->addressV];
+	createInfo.addressModeW = XNAToVK_SamplerAddressMode[samplerState->addressW];
+	createInfo.magFilter = XNAToVK_MagFilter[samplerState->filter];
+	createInfo.minFilter = XNAToVK_MinFilter[samplerState->filter];
+	if (hasMipmaps)
+	{
+		createInfo.mipmapMode = XNAToVK_MipFilter[samplerState->filter];
+	}
+	createInfo.mipLodBias = samplerState->mipMapLevelOfDetailBias;
+	/* FIXME: double check that the lod range is correct */
+	createInfo.minLod = 0;
+	createInfo.maxLod = samplerState->maxMipLevel;
+	createInfo.maxAnisotropy = samplerState == FNA3D_TEXTUREFILTER_ANISOTROPIC ?
+		SDL_max(1, samplerState->maxAnisotropy) :
+		1;
+
+	VkResult result = renderer->vkCreateSampler(
+		renderer->logicalDevice,
+		&createInfo,
+		NULL,
+		&state
+	);
+
+	if (result != VK_SUCCESS)
+	{
+		LogVulkanResult("vkCreateSampler", result);
+		return 0;
+	}
+
+	hmput(renderer->samplerStateHashMap, hash, state);
+
+	return state;
+}
+
 static PipelineHash GetPipelineHash(
 	FNAVulkanRenderer *renderer
 ) {
@@ -2212,8 +2326,8 @@ static void BeginRenderPass(
 	/* TODO: visibility buffer */
 
 	/* Reset bindings */
-
-	for (uint32_t i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
+	
+	for (uint32_t i = 0; i < MAX_TOTAL_SAMPLERS; i++)
 	{
 		if (renderer->textures[i] != &NullTexture)
 		{
@@ -2223,6 +2337,17 @@ static void BeginRenderPass(
 		{
 			renderer->samplerNeedsUpdate[i] = 1;
 		}
+	}
+
+	renderer->ldFragUniformBuffer = NULL;
+	renderer->ldFragUniformOffset = 0;
+	renderer->ldVertUniformBuffer = NULL;
+	renderer->ldVertUniformOffset = 0;
+	
+	for (uint32_t i = 0; i < MAX_BOUND_VERTEX_BUFFERS; i++)
+	{
+		renderer->ldVertexBuffers[i] = NULL;
+		renderer->ldVertexBufferOffsets[i] = 0;
 	}
 
 	VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
@@ -2932,7 +3057,69 @@ void VULKAN_VerifySampler(
 	FNA3D_Texture *texture,
 	FNA3D_SamplerState *sampler
 ) {
-	/* TODO */
+	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
+	VulkanTexture *vulkanTexture = (VulkanTexture*) texture;
+	VkSampler *vkSamplerState;
+
+	if (texture == NULL)
+	{
+		if (renderer->textures[index] != &NullTexture)
+		{
+			renderer->textures[index] = &NullTexture;
+			renderer->textureNeedsUpdate[index] = 1;
+		}
+
+		if (renderer->samplers[index] == NULL)
+		{
+			renderer->samplers[index] = FetchSamplerState(
+				renderer,
+				sampler,
+				0
+			);
+
+			renderer->samplerNeedsUpdate[index] = 1;
+		}
+
+		return;
+	}
+
+	if (	vulkanTexture == renderer->textures[index] &&
+			sampler->addressU == vulkanTexture->wrapS &&
+			sampler->addressV == vulkanTexture->wrapT &&
+			sampler->addressW == vulkanTexture->wrapR &&
+			sampler->filter == vulkanTexture->filter &&
+			sampler->maxAnisotropy == vulkanTexture->anisotropy &&
+			sampler->maxMipLevel == vulkanTexture->maxMipmapLevel &&
+			sampler->mipMapLevelOfDetailBias == vulkanTexture->lodBias	)
+	{
+		return;
+	}
+
+	if (vulkanTexture != renderer->textures[index])
+	{
+		renderer->textures[index] = vulkanTexture;
+		renderer->textureNeedsUpdate[index] = 1;
+	}
+
+	vulkanTexture->wrapS = sampler->addressU;
+	vulkanTexture->wrapT = sampler->addressV;
+	vulkanTexture->wrapR = sampler->addressW;
+	vulkanTexture->filter = sampler->filter;
+	vulkanTexture->anisotropy = sampler->maxAnisotropy;
+	vulkanTexture->maxMipmapLevel = sampler->maxMipLevel;
+	vulkanTexture->lodBias = sampler->mipMapLevelOfDetailBias;
+
+	vkSamplerState = FetchSamplerState(
+		renderer,
+		sampler,
+		vulkanTexture->hasMipmaps
+	);
+
+	if (vkSamplerState != renderer->samplers[index])
+	{
+		renderer->samplers[index] = vkSamplerState;
+		renderer->samplerNeedsUpdate[index] = 1;
+	}
 }
 
 void VULKAN_VerifyVertexSampler(
