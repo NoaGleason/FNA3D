@@ -258,6 +258,16 @@ typedef struct FNAVulkanRenderer
 	uint8_t textureNeedsUpdate[MAX_TEXTURE_SAMPLERS];
 	uint8_t samplerNeedsUpdate[MAX_TEXTURE_SAMPLERS];
 
+	VkDescriptorSetLayoutBinding vertexSamplerBindings[MAX_VERTEXTEXTURE_SAMPLERS];
+	VkDescriptorSetLayoutBinding samplerBindings[MAX_TEXTURE_SAMPLERS];
+	VkDescriptorSetLayoutBinding vertexUniformBufferBinding;
+	VkDescriptorSetLayoutBinding fragUniformBufferBinding;
+
+	VkDescriptorSetLayout vertexSamplerDescriptorSetLayout;
+	VkDescriptorSetLayout samplerDescriptorSetLayout;
+	VkDescriptorSetLayout vertexUniformBufferDescriptorSetLayout;
+	VkDescriptorSetLayout fragUniformBufferDescriptorSetLayout;
+
 	FNAVulkanFramebuffer *framebuffers;
 	uint32_t framebufferCount;
 
@@ -954,7 +964,16 @@ static void BindPipeline(FNAVulkanRenderer *renderer)
 /* FIXME: does this involve the pipeline? */
 static void BindResources(FNAVulkanRenderer *renderer)
 {
-	/* TODO */
+	for (uint32_t i = 0; i < MAX_TOTAL_SAMPLERS; i++)
+	{
+		if (renderer->textureNeedsUpdate[i])
+		{
+			if (i < MAX_TEXTURE_SAMPLERS)
+			{
+
+			}
+		}
+	}
 }
 
 static void BindUserVertexBuffer(
@@ -1274,6 +1293,30 @@ void VULKAN_DestroyDevice(FNA3D_Device *device)
 			NULL
 		);
 	}
+
+	renderer->vkDestroyDescriptorSetLayout(
+		renderer->logicalDevice,
+		renderer->vertexSamplerDescriptorSetLayout,
+		NULL
+	);
+
+	renderer->vkDestroyDescriptorSetLayout(
+		renderer->logicalDevice,
+		renderer->samplerDescriptorSetLayout,
+		NULL
+	);
+
+	renderer->vkDestroyDescriptorSetLayout(
+		renderer->logicalDevice,
+		renderer->vertexUniformBufferDescriptorSetLayout,
+		NULL
+	);
+
+	renderer->vkDestroyDescriptorSetLayout(
+		renderer->logicalDevice,
+		renderer->fragUniformBufferDescriptorSetLayout,
+		NULL
+	);
 
 	renderer->vkDestroyPipelineLayout(
 		renderer->logicalDevice,
@@ -2110,13 +2153,12 @@ static VkSampler FetchSamplerState(
 	uint8_t hasMipmaps
 ) {
 	StateHash hash;
-	VkSampler state;
 
 	hash = GetSamplerStateHash(*samplerState);
-	state = hmget(renderer->samplerStateHashMap, hash);
-	if (state != NULL)
+
+	if (hmgeti(renderer->samplerStateHashMap, hash) != -1)
 	{
-		return state;
+		return hmget(renderer->samplerStateHashMap, hash);
 	}
 
 	VkSamplerCreateInfo createInfo = {
@@ -2136,10 +2178,11 @@ static VkSampler FetchSamplerState(
 	/* FIXME: double check that the lod range is correct */
 	createInfo.minLod = 0;
 	createInfo.maxLod = samplerState->maxMipLevel;
-	createInfo.maxAnisotropy = samplerState == FNA3D_TEXTUREFILTER_ANISOTROPIC ?
+	createInfo.maxAnisotropy = samplerState->filter == FNA3D_TEXTUREFILTER_ANISOTROPIC ?
 		SDL_max(1, samplerState->maxAnisotropy) :
 		1;
 
+	VkSampler state;
 	VkResult result = renderer->vkCreateSampler(
 		renderer->logicalDevice,
 		&createInfo,
@@ -3059,7 +3102,7 @@ void VULKAN_VerifySampler(
 ) {
 	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
 	VulkanTexture *vulkanTexture = (VulkanTexture*) texture;
-	VkSampler *vkSamplerState;
+	VkSampler vkSamplerState;
 
 	if (texture == NULL)
 	{
@@ -3071,12 +3114,13 @@ void VULKAN_VerifySampler(
 
 		if (renderer->samplers[index] == NULL)
 		{
-			renderer->samplers[index] = FetchSamplerState(
+			VkSampler samplerState = FetchSamplerState(
 				renderer,
 				sampler,
 				0
 			);
 
+			renderer->samplers[index] = &samplerState;
 			renderer->samplerNeedsUpdate[index] = 1;
 		}
 
@@ -3115,9 +3159,9 @@ void VULKAN_VerifySampler(
 		vulkanTexture->hasMipmaps
 	);
 
-	if (vkSamplerState != renderer->samplers[index])
+	if (&vkSamplerState != renderer->samplers[index])
 	{
-		renderer->samplers[index] = vkSamplerState;
+		renderer->samplers[index] = &vkSamplerState;
 		renderer->samplerNeedsUpdate[index] = 1;
 	}
 }
@@ -4737,21 +4781,6 @@ FNA3D_Device* VULKAN_CreateDevice(
 		&deviceProperties
 	);
 
-	renderer->numSamplers = SDL_min(
-		deviceProperties.limits.maxSamplerAllocationCount,
-		MAX_TEXTURE_SAMPLERS + MAX_VERTEXTEXTURE_SAMPLERS
-	);
-
-	renderer->numTextureSlots = SDL_min(
-		renderer->numSamplers,
-		MAX_TEXTURE_SAMPLERS
-	);
-
-	renderer->numVertexTextureSlots = SDL_min(
-		SDL_max(renderer->numSamplers - MAX_TEXTURE_SAMPLERS, 0),
-		MAX_VERTEXTEXTURE_SAMPLERS
-	);
-	
 	/* Setting up Queue Info */
 	int queueInfoCount = 1;
 	VkDeviceQueueCreateInfo queueCreateInfos[2];
@@ -5029,9 +5058,149 @@ FNA3D_Device* VULKAN_CreateDevice(
 		return NULL;
 	}
 
+	/* set up sampler description */
+
+	renderer->numSamplers = SDL_min(
+		deviceProperties.limits.maxSamplerAllocationCount,
+		MAX_TEXTURE_SAMPLERS + MAX_VERTEXTEXTURE_SAMPLERS
+	);
+
+	renderer->numTextureSlots = SDL_min(
+		renderer->numSamplers,
+		MAX_TEXTURE_SAMPLERS
+	);
+
+	renderer->numVertexTextureSlots = SDL_min(
+		SDL_max(renderer->numSamplers - MAX_TEXTURE_SAMPLERS, 0),
+		MAX_VERTEXTEXTURE_SAMPLERS
+	);
+
+	for (uint32_t i = 0; i < MAX_VERTEXTEXTURE_SAMPLERS; i++)
+	{
+		VkDescriptorSetLayoutBinding vertexSamplerBinding;
+		vertexSamplerBinding.binding = i;
+		vertexSamplerBinding.descriptorCount = 1;
+		vertexSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		vertexSamplerBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		vertexSamplerBinding.pImmutableSamplers = NULL;
+
+		renderer->vertexSamplerBindings[i] = vertexSamplerBinding;
+	}
+
+	VkDescriptorSetLayoutCreateInfo vertexSamplerLayoutCreateInfo = {
+		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+	};
+	vertexSamplerLayoutCreateInfo.bindingCount = MAX_VERTEXTEXTURE_SAMPLERS;
+	vertexSamplerLayoutCreateInfo.pBindings = renderer->vertexSamplerBindings;
+
+	vulkanResult = renderer->vkCreateDescriptorSetLayout(
+		renderer->logicalDevice,
+		&vertexSamplerLayoutCreateInfo,
+		NULL,
+		&renderer->vertexSamplerDescriptorSetLayout
+	);
+
+	if (vulkanResult != VK_SUCCESS)
+	{
+		LogVulkanResult("vkCreateDescriptorSetLayout", vulkanResult);
+		return NULL;
+	}
+
+	for (uint32_t i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
+	{
+		VkDescriptorSetLayoutBinding samplerBinding;
+		samplerBinding.binding = i;
+		samplerBinding.descriptorCount = 1;
+		samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		samplerBinding.pImmutableSamplers = NULL;
+
+		renderer->samplerBindings[i] = samplerBinding;
+	}
+	
+	VkDescriptorSetLayoutCreateInfo samplerLayoutCreateInfo = {
+		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+	};
+	samplerLayoutCreateInfo.bindingCount = MAX_TEXTURE_SAMPLERS;
+	samplerLayoutCreateInfo.pBindings = renderer->samplerBindings;
+	
+	vulkanResult = renderer->vkCreateDescriptorSetLayout(
+		renderer->logicalDevice,
+		&samplerLayoutCreateInfo,
+		NULL,
+		&renderer->samplerDescriptorSetLayout
+	);
+
+	if (vulkanResult != VK_SUCCESS)
+	{
+		LogVulkanResult("vkCreateDescriptorSetLayout", vulkanResult);
+		return NULL;
+	}
+
+	renderer->vertexUniformBufferBinding.binding = 0;
+	renderer->vertexUniformBufferBinding.descriptorCount = 1;
+	renderer->vertexUniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	renderer->vertexUniformBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	renderer->vertexUniformBufferBinding.pImmutableSamplers = NULL;
+
+	renderer->fragUniformBufferBinding.binding = 0;
+	renderer->fragUniformBufferBinding.descriptorCount = 1;
+	renderer->fragUniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	renderer->fragUniformBufferBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	renderer->fragUniformBufferBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutCreateInfo vertexUniformBufferLayoutCreateInfo = {
+		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+	};
+
+	vertexUniformBufferLayoutCreateInfo.bindingCount = 1;
+	vertexUniformBufferLayoutCreateInfo.pBindings = &renderer->vertexUniformBufferBinding;
+
+	vulkanResult = renderer->vkCreateDescriptorSetLayout(
+		renderer->logicalDevice,
+		&vertexUniformBufferLayoutCreateInfo,
+		NULL,
+		&renderer->vertexUniformBufferDescriptorSetLayout
+	);
+
+	if (vulkanResult != VK_SUCCESS)
+	{
+		LogVulkanResult("vkCreateDescriptorSetLayout", vulkanResult);
+		return NULL;
+	}
+
+	VkDescriptorSetLayoutCreateInfo fragUniformBufferLayoutCreateInfo = {
+		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+	};
+
+	fragUniformBufferLayoutCreateInfo.bindingCount = 1;
+	fragUniformBufferLayoutCreateInfo.pBindings = &renderer->fragUniformBufferBinding;
+
+	vulkanResult = renderer->vkCreateDescriptorSetLayout(
+		renderer->logicalDevice,
+		&fragUniformBufferLayoutCreateInfo,
+		NULL,
+		&renderer->fragUniformBufferDescriptorSetLayout
+	);
+
+	if (vulkanResult != VK_SUCCESS)
+	{
+		LogVulkanResult("vkCreateDescriptorSetLayout", vulkanResult);
+		return NULL;
+	}
+
+	VkDescriptorSetLayout setLayouts[4] = {
+		renderer->vertexSamplerDescriptorSetLayout,
+		renderer->samplerDescriptorSetLayout,
+		renderer->vertexUniformBufferDescriptorSetLayout,
+		renderer->fragUniformBufferDescriptorSetLayout
+	};
+
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
 		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
 	};
+	pipelineLayoutInfo.setLayoutCount = 4;
+	pipelineLayoutInfo.pSetLayouts = setLayouts;
 
 	vulkanResult = renderer->vkCreatePipelineLayout(
 		renderer->logicalDevice,
