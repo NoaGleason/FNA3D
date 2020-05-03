@@ -5075,6 +5075,8 @@ FNA3D_Device* VULKAN_CreateDevice(
 		MAX_VERTEXTEXTURE_SAMPLERS
 	);
 
+	/* define vertex sampler layout */
+
 	for (uint32_t i = 0; i < MAX_VERTEXTEXTURE_SAMPLERS; i++)
 	{
 		VkDescriptorSetLayoutBinding vertexSamplerBinding;
@@ -5105,6 +5107,8 @@ FNA3D_Device* VULKAN_CreateDevice(
 		LogVulkanResult("vkCreateDescriptorSetLayout", vulkanResult);
 		return NULL;
 	}
+
+	/* define sampler layout */
 
 	for (uint32_t i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
 	{
@@ -5137,17 +5141,13 @@ FNA3D_Device* VULKAN_CreateDevice(
 		return NULL;
 	}
 
+	/* define vertex UBO layout */
+
 	renderer->vertexUniformBufferBinding.binding = 0;
 	renderer->vertexUniformBufferBinding.descriptorCount = 1;
 	renderer->vertexUniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	renderer->vertexUniformBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	renderer->vertexUniformBufferBinding.pImmutableSamplers = NULL;
-
-	renderer->fragUniformBufferBinding.binding = 0;
-	renderer->fragUniformBufferBinding.descriptorCount = 1;
-	renderer->fragUniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	renderer->fragUniformBufferBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	renderer->fragUniformBufferBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutCreateInfo vertexUniformBufferLayoutCreateInfo = {
 		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
@@ -5169,6 +5169,14 @@ FNA3D_Device* VULKAN_CreateDevice(
 		return NULL;
 	}
 
+	/* define frag UBO layout */
+
+	renderer->fragUniformBufferBinding.binding = 0;
+	renderer->fragUniformBufferBinding.descriptorCount = 1;
+	renderer->fragUniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	renderer->fragUniformBufferBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	renderer->fragUniformBufferBinding.pImmutableSamplers = NULL;
+
 	VkDescriptorSetLayoutCreateInfo fragUniformBufferLayoutCreateInfo = {
 		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
 	};
@@ -5188,6 +5196,8 @@ FNA3D_Device* VULKAN_CreateDevice(
 		LogVulkanResult("vkCreateDescriptorSetLayout", vulkanResult);
 		return NULL;
 	}
+
+	/* put all the layouts together into the PipelineLayout */
 
 	VkDescriptorSetLayout setLayouts[4] = {
 		renderer->vertexSamplerDescriptorSetLayout,
