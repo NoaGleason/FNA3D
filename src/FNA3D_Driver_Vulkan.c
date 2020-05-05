@@ -243,12 +243,16 @@ typedef struct FNAVulkanRenderer
 	VulkanBuffer *userIndexBuffer;
 	int32_t userVertexStride;
 
-	VkBuffer *ldVertUniformBuffer;
-	VkBuffer *ldFragUniformBuffer;
-	int32_t ldVertUniformOffset;
-	int32_t ldFragUniformOffset;
-	VkBuffer *ldVertexBuffers[MAX_BOUND_VERTEX_BUFFERS];
-	int32_t ldVertexBufferOffsets[MAX_BOUND_VERTEX_BUFFERS];
+	/* counts equal to swap chain count */
+	VkBuffer **ldVertUniformBuffers; /* FIXME: init these !! */
+	VkBuffer **ldFragUniformBuffers;
+	int32_t *ldVertUniformOffsets;
+	int32_t *ldFragUniformOffsets;
+
+	/* needs to be dynamic because of swap chain count */
+	VkBuffer **ldVertexBuffers;
+	int32_t *ldVertexBufferOffsets;
+	uint32_t ldVertexBufferCount;
 
 	int32_t stencilRef;
 
@@ -256,10 +260,13 @@ typedef struct FNAVulkanRenderer
 	int32_t numTextureSlots;
 	int32_t numVertexTextureSlots;
 
-	VulkanTexture *textures[MAX_TEXTURE_SAMPLERS];
-	VkSampler *samplers[MAX_TEXTURE_SAMPLERS];
-	uint8_t textureNeedsUpdate[MAX_TEXTURE_SAMPLERS];
-	uint8_t samplerNeedsUpdate[MAX_TEXTURE_SAMPLERS];
+	/* count needs to be dynamic because of swap chain count */
+	uint32_t textureCount;
+
+	VulkanTexture **textures;
+	VkSampler **samplers;
+	uint8_t *textureNeedsUpdate;
+	uint8_t *samplerNeedsUpdate;
 
 	VkDescriptorSetLayoutBinding vertexSamplerBindings[MAX_VERTEXTEXTURE_SAMPLERS];
 	VkDescriptorSetLayoutBinding samplerBindings[MAX_TEXTURE_SAMPLERS];
@@ -271,10 +278,14 @@ typedef struct FNAVulkanRenderer
 	VkDescriptorSetLayout vertexUniformBufferDescriptorSetLayout;
 	VkDescriptorSetLayout fragUniformBufferDescriptorSetLayout;
 
+	/* these need to be dynamic because of swap chain count */
+	uint32_t vertexSamplerCount;
+	uint32_t fragSamplerCount;
+
 	VkDescriptorSet *vertexSamplerDescriptorSets;
 	VkDescriptorSet *samplerDescriptorSets;
-	VkDescriptorSet *vertexUniformBufferDescriptorSets;
-	VkDescriptorSet *fragUniformBufferDescriptorSets;
+	VkDescriptorSet *vertexUniformBufferDescriptorSets; /* count is equal to swap chain count */
+	VkDescriptorSet *fragUniformBufferDescriptorSets; /* count is equal to swap chain count */
 
 	FNAVulkanFramebuffer *framebuffers;
 	uint32_t framebufferCount;
@@ -976,67 +987,130 @@ static void BindResources(FNAVulkanRenderer *renderer)
 	uint32_t descriptorImageInfoCount = 0;
 	VkDescriptorBufferInfo descriptorBufferInfos[2];
 	VkWriteDescriptorSet descriptorWrites[MAX_TOTAL_SAMPLERS + 2];
-	uint32_t descriptorSetCount = 0;
+	uint32_t descriptorWriteCount = 0;
+
+	uint32_t vertArrayOffset = (renderer->currentSwapChainIndex * MAX_VERTEXTEXTURE_SAMPLERS);
+	uint32_t fragArrayOffset = (renderer->currentSwapChainIndex * MAX_TEXTURE_SAMPLERS);
 
 	for (uint32_t i = 0; i < MAX_VERTEXTEXTURE_SAMPLERS; i++)
 	{
-		if (	renderer->textureNeedsUpdate[i] || 
-				renderer->samplerNeedsUpdate[i]		)
+		if (	renderer->textureNeedsUpdate[vertArrayOffset + i] || 
+				renderer->samplerNeedsUpdate[vertArrayOffset + i]		)
 		{
 			descriptorImageInfos[descriptorImageInfoCount].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			descriptorImageInfos[descriptorImageInfoCount].imageView = renderer->textures[i]->imageView;
-			descriptorImageInfos[descriptorImageInfoCount].sampler = *renderer->samplers[i];
+			descriptorImageInfos[descriptorImageInfoCount].imageView = renderer->textures[vertArrayOffset + i]->imageView;
+			descriptorImageInfos[descriptorImageInfoCount].sampler = *renderer->samplers[vertArrayOffset + i];
 			descriptorImageInfoCount++;
 
-			descriptorWrites[descriptorSetCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[descriptorSetCount].dstSet = renderer->vertexSamplerDescriptorSets[i];
-			descriptorWrites[descriptorSetCount].dstBinding = i;
-			descriptorWrites[descriptorSetCount].dstArrayElement = 0;
-			descriptorWrites[descriptorSetCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWrites[descriptorSetCount].descriptorCount = 1;
-			descriptorWrites[descriptorSetCount].pBufferInfo = NULL;
-			descriptorWrites[descriptorSetCount].pImageInfo = &descriptorImageInfos[descriptorImageInfoCount];
-			descriptorWrites[descriptorSetCount].pTexelBufferView = NULL;
+			descriptorWrites[descriptorWriteCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrites[descriptorWriteCount].dstSet = renderer->vertexSamplerDescriptorSets[vertArrayOffset + i];
+			descriptorWrites[descriptorWriteCount].dstBinding = i;
+			descriptorWrites[descriptorWriteCount].dstArrayElement = 0;
+			descriptorWrites[descriptorWriteCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			descriptorWrites[descriptorWriteCount].descriptorCount = 1;
+			descriptorWrites[descriptorWriteCount].pBufferInfo = NULL;
+			descriptorWrites[descriptorWriteCount].pImageInfo = &descriptorImageInfos[descriptorImageInfoCount];
+			descriptorWrites[descriptorWriteCount].pTexelBufferView = NULL;
 
-			descriptorSetCount++;
+			descriptorWriteCount++;
+
+			renderer->textureNeedsUpdate[vertArrayOffset + 1] = 0;
+			renderer->samplerNeedsUpdate[vertArrayOffset + 1] = 0;
 		}
 	}
 
 	for (uint32_t i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
 	{
-		if (	renderer->textureNeedsUpdate[i] || 
-				renderer->samplerNeedsUpdate[i]		)
+		if (	renderer->textureNeedsUpdate[fragArrayOffset + i] || 
+				renderer->samplerNeedsUpdate[fragArrayOffset + i]		)
 		{
 			descriptorImageInfos[descriptorImageInfoCount].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			descriptorImageInfos[descriptorImageInfoCount].imageView = renderer->textures[i]->imageView;
-			descriptorImageInfos[descriptorImageInfoCount].sampler = *renderer->samplers[i];
+			descriptorImageInfos[descriptorImageInfoCount].imageView = renderer->textures[fragArrayOffset + i]->imageView;
+			descriptorImageInfos[descriptorImageInfoCount].sampler = *renderer->samplers[fragArrayOffset + i];
 			descriptorImageInfoCount++;
 
-			descriptorWrites[descriptorSetCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[descriptorSetCount].dstSet = renderer->vertexSamplerDescriptorSets[i];
-			descriptorWrites[descriptorSetCount].dstBinding = i;
-			descriptorWrites[descriptorSetCount].dstArrayElement = 0;
-			descriptorWrites[descriptorSetCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWrites[descriptorSetCount].descriptorCount = 1;
-			descriptorWrites[descriptorSetCount].pBufferInfo = NULL;
-			descriptorWrites[descriptorSetCount].pImageInfo = &descriptorImageInfos[descriptorImageInfoCount];
-			descriptorWrites[descriptorSetCount].pTexelBufferView = NULL;
+			descriptorWrites[descriptorWriteCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrites[descriptorWriteCount].dstSet = renderer->vertexSamplerDescriptorSets[fragArrayOffset + i];
+			descriptorWrites[descriptorWriteCount].dstBinding = i;
+			descriptorWrites[descriptorWriteCount].dstArrayElement = 0;
+			descriptorWrites[descriptorWriteCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			descriptorWrites[descriptorWriteCount].descriptorCount = 1;
+			descriptorWrites[descriptorWriteCount].pBufferInfo = NULL;
+			descriptorWrites[descriptorWriteCount].pImageInfo = &descriptorImageInfos[descriptorImageInfoCount];
+			descriptorWrites[descriptorWriteCount].pTexelBufferView = NULL;
 
-			descriptorSetCount++;
+			descriptorWriteCount++;
+
+			renderer->textureNeedsUpdate[fragArrayOffset + 1] = 0;
+			renderer->samplerNeedsUpdate[fragArrayOffset + 1] = 0;
 		}
 	}
 
-	/* FIXME: implement this in mojoshader */
-	/*
-	MOJOSHADER_vkGetUniformBuffers(
-		(void**) *vUniform,
-		&vOff,
-		(void**) &fUniform,
-		&fOff
-	);
-	*/
+	VkBuffer *vUniform, *fUniform;
+	VkDeviceSize vOff, fOff, vSize, fSize;
 
-	/* TODO: update descriptors here */
+	MOJOSHADER_vkGetUniformBuffers(
+		(void**) &vUniform,
+		&vOff,
+		&vSize,
+		(void**) &fUniform,
+		&fOff,
+		&fSize
+	);
+
+	if (	vUniform != renderer->ldVertUniformBuffers[renderer->currentSwapChainIndex] ||
+			vOff != renderer->ldVertUniformOffsets[renderer->currentSwapChainIndex]		)
+	{
+		descriptorBufferInfos[0].buffer = *vUniform;
+		descriptorBufferInfos[0].offset = vOff;
+		descriptorBufferInfos[0].range = vSize;
+
+		descriptorWrites[descriptorWriteCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[descriptorWriteCount].dstSet = renderer->vertexUniformBufferDescriptorSets[renderer->currentSwapChainIndex];
+		descriptorWrites[descriptorWriteCount].dstBinding = 0;
+		descriptorWrites[descriptorWriteCount].dstArrayElement = 0;
+		descriptorWrites[descriptorWriteCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		descriptorWrites[descriptorWriteCount].descriptorCount = 1;
+		descriptorWrites[descriptorWriteCount].pBufferInfo = &descriptorBufferInfos[0];
+		descriptorWrites[descriptorWriteCount].pImageInfo = NULL;
+		descriptorWrites[descriptorWriteCount].pTexelBufferView = NULL;
+
+		descriptorWriteCount++;
+
+		renderer->ldVertUniformBuffers[renderer->currentSwapChainIndex] = vUniform;
+		renderer->ldVertUniformOffsets[renderer->currentSwapChainIndex] = vOff;
+	}
+
+	if (	fUniform != renderer->ldFragUniformBuffers[renderer->currentSwapChainIndex] ||
+			fOff != renderer->ldFragUniformOffsets[renderer->currentSwapChainIndex]		)
+	{
+		descriptorBufferInfos[1].buffer = *fUniform;
+		descriptorBufferInfos[1].offset = fOff;
+		descriptorBufferInfos[1].range = fSize;
+
+		descriptorWrites[descriptorWriteCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[descriptorWriteCount].dstSet = renderer->fragUniformBufferDescriptorSets[renderer->currentSwapChainIndex];
+		descriptorWrites[descriptorWriteCount].dstBinding = 0;
+		descriptorWrites[descriptorWriteCount].dstArrayElement = 0;
+		descriptorWrites[descriptorWriteCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		descriptorWrites[descriptorWriteCount].descriptorCount = 1;
+		descriptorWrites[descriptorWriteCount].pBufferInfo = &descriptorBufferInfos[1];
+		descriptorWrites[descriptorWriteCount].pImageInfo = NULL;
+		descriptorWrites[descriptorWriteCount].pTexelBufferView = NULL;
+
+		descriptorWriteCount++;
+
+		renderer->ldFragUniformBuffers[renderer->currentSwapChainIndex] = fUniform;
+		renderer->ldFragUniformOffsets[renderer->currentSwapChainIndex] = fOff;
+	}
+
+	renderer->vkUpdateDescriptorSets(
+		renderer->logicalDevice,
+		descriptorWriteCount,
+		descriptorWrites,
+		0,
+		NULL
+	);
 }
 
 static void BindUserVertexBuffer(
@@ -1475,6 +1549,18 @@ void VULKAN_DestroyDevice(FNA3D_Device *device)
 
 	renderer->vkDestroyInstance(renderer->instance, NULL);
 
+	SDL_free(renderer->ldVertexBuffers);
+	SDL_free(renderer->ldFragUniformBuffers);
+	SDL_free(renderer->ldVertexBufferOffsets);
+	SDL_free(renderer->ldFragUniformOffsets);
+	SDL_free(renderer->textures);
+	SDL_free(renderer->samplers);
+	SDL_free(renderer->textureNeedsUpdate);
+	SDL_free(renderer->samplerNeedsUpdate);
+	SDL_free(renderer->vertexSamplerDescriptorSets);
+	SDL_free(renderer->samplerDescriptorSets);
+	SDL_free(renderer->vertexUniformBufferDescriptorSets);
+	SDL_free(renderer->fragUniformBufferDescriptorSets);
 	SDL_free(renderer->commandBuffers);
 	SDL_free(renderer->swapChainImages);
 	SDL_free(renderer);
@@ -2480,9 +2566,11 @@ static void BeginRenderPass(
 
 	/* TODO: visibility buffer */
 
-	/* Reset bindings */
+	/* Reset bindings for the current frame in flight */
 	
-	for (uint32_t i = 0; i < MAX_TOTAL_SAMPLERS; i++)
+	uint32_t swapChainOffset = MAX_TOTAL_SAMPLERS * renderer->currentSwapChainIndex;
+
+	for (uint32_t i = swapChainOffset; i < swapChainOffset + MAX_TOTAL_SAMPLERS; i++)
 	{
 		if (renderer->textures[i] != &NullTexture)
 		{
@@ -2494,12 +2582,14 @@ static void BeginRenderPass(
 		}
 	}
 
-	renderer->ldFragUniformBuffer = NULL;
-	renderer->ldFragUniformOffset = 0;
-	renderer->ldVertUniformBuffer = NULL;
-	renderer->ldVertUniformOffset = 0;
+	renderer->ldFragUniformBuffers[renderer->currentSwapChainIndex] = NULL;
+	renderer->ldFragUniformOffsets[renderer->currentSwapChainIndex] = 0;
+	renderer->ldVertUniformBuffers[renderer->currentSwapChainIndex] = NULL;
+	renderer->ldVertUniformOffsets[renderer->currentSwapChainIndex] = 0;
 	
-	for (uint32_t i = 0; i < MAX_BOUND_VERTEX_BUFFERS; i++)
+	swapChainOffset = MAX_BOUND_VERTEX_BUFFERS * renderer->currentSwapChainIndex;
+
+	for (uint32_t i = swapChainOffset; i < swapChainOffset + MAX_BOUND_VERTEX_BUFFERS; i++)
 	{
 		renderer->ldVertexBuffers[i] = NULL;
 		renderer->ldVertexBufferOffsets[i] = 0;
@@ -2554,6 +2644,21 @@ void VULKAN_BeginFrame(FNA3D_Renderer *driverData)
 		VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT
 	);
 
+	result = renderer->vkAcquireNextImageKHR(
+		renderer->logicalDevice,
+		renderer->swapChain,
+		UINT64_MAX,
+		renderer->imageAvailableSemaphore,
+		VK_NULL_HANDLE,
+		&renderer->currentSwapChainIndex
+	);
+
+	if (result != VK_SUCCESS)
+	{
+		LogVulkanResult("vkAcquireNextImageKHR", result);
+		return;
+	}
+
 	renderer->frameInProgress = 1;
 	renderer->commandBufferCount = 0;
 }
@@ -2573,22 +2678,6 @@ void VULKAN_SwapBuffers(
 	VULKAN_BeginFrame(driverData);
 	VULKAN_SetRenderTargets(driverData, NULL, 0, NULL, FNA3D_DEPTHFORMAT_NONE);
 	EndPass(renderer);
-
-	uint32_t image_index;
-	result = renderer->vkAcquireNextImageKHR(
-		renderer->logicalDevice,
-		renderer->swapChain,
-		UINT64_MAX,
-		renderer->imageAvailableSemaphore,
-		VK_NULL_HANDLE,
-		&image_index
-	);
-
-	if (result != VK_SUCCESS)
-	{
-		LogVulkanResult("vkAcquireNextImageKHR", result);
-		return;
-	}
 
 	if (sourceRectangle != NULL)
 	{
@@ -2621,7 +2710,7 @@ void VULKAN_SwapBuffers(
 		renderer,
 		&renderer->fauxBackbufferColor,
 		srcRect,
-		&renderer->swapChainImages[image_index],
+		&renderer->swapChainImages[renderer->currentSwapChainIndex],
 		dstRect
 	);
 
@@ -2656,7 +2745,7 @@ void VULKAN_SwapBuffers(
 	}
 
 	VkSwapchainKHR swapChains[] = { renderer->swapChain };
-	uint32_t imageIndices[] = { image_index };
+	uint32_t imageIndices[] = { renderer->currentSwapChainIndex };
 
 	VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 	presentInfo.waitSemaphoreCount = 1;
@@ -5375,7 +5464,13 @@ FNA3D_Device* VULKAN_CreateDevice(
 	vertexSamplerDescriptorAllocInfo.descriptorSetCount = swapChainImageCount * MAX_VERTEXTEXTURE_SAMPLERS;
 	vertexSamplerDescriptorAllocInfo.pSetLayouts = &setLayouts[0];
 
-	renderer->vertexSamplerDescriptorSets = SDL_malloc(sizeof(VkDescriptorSet) * MAX_VERTEXTEXTURE_SAMPLERS * swapChainImageCount);
+	renderer->vertexSamplerCount = MAX_VERTEXTEXTURE_SAMPLERS * swapChainImageCount;
+
+	renderer->vertexSamplerDescriptorSets = SDL_malloc(
+		sizeof(VkDescriptorSet) * 
+		renderer->vertexSamplerCount
+	);
+
 	if (!renderer->vertexSamplerDescriptorSets)
 	{
 		SDL_OutOfMemory();
@@ -5401,7 +5496,13 @@ FNA3D_Device* VULKAN_CreateDevice(
 	samplerDescriptorAllocInfo.descriptorSetCount = swapChainImageCount * MAX_TEXTURE_SAMPLERS;
 	samplerDescriptorAllocInfo.pSetLayouts = &setLayouts[1]; 
 
-	renderer->samplerDescriptorSets = SDL_malloc(sizeof(VkDescriptorSet) * MAX_TEXTURE_SAMPLERS * swapChainImageCount);
+	renderer->fragSamplerCount = MAX_TEXTURE_SAMPLERS * swapChainImageCount;
+
+	renderer->samplerDescriptorSets = SDL_malloc(
+		sizeof(VkDescriptorSet) *
+		renderer->fragSamplerCount
+	);
+
 	if (!renderer->samplerDescriptorSets)
 	{
 		SDL_OutOfMemory();
@@ -5475,6 +5576,124 @@ FNA3D_Device* VULKAN_CreateDevice(
 		LogVulkanResult("vkAllocateDescriptorSets", vulkanResult);
 		return NULL;
 	}
+
+	/* set up UBO pointer storage */
+
+	renderer->ldVertUniformBuffers = SDL_malloc(
+		sizeof(VkBuffer*) *
+		renderer->swapChainImageCount
+	);
+
+	if (!renderer->ldVertUniformBuffers)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->ldFragUniformBuffers = SDL_malloc(
+		sizeof(VkBuffer*) *
+		renderer->swapChainImageCount
+	);
+
+	if (!renderer->ldFragUniformBuffers)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->ldVertUniformOffsets = SDL_malloc(
+		sizeof(int32_t) *
+		renderer->swapChainImageCount
+	);
+
+	if (!renderer->ldVertUniformOffsets)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->ldFragUniformOffsets = SDL_malloc(
+		sizeof(int32_t) *
+		renderer->swapChainImageCount
+	);
+
+	if (!renderer->ldFragUniformOffsets)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	/* set up texture storage */
+
+	renderer->ldVertexBufferCount = MAX_BOUND_VERTEX_BUFFERS * renderer->swapChainImageCount;
+
+	renderer->ldVertexBuffers = SDL_malloc(
+		sizeof(VkBuffer*) * 
+		renderer->ldVertexBufferCount
+	);
+	
+	if (!renderer->ldVertexBuffers)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->ldVertexBufferOffsets = SDL_malloc(
+		sizeof(int32_t) * 
+		renderer->ldVertexBufferCount
+	);
+
+	if (!renderer->ldVertexBufferOffsets)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->textureCount = MAX_TOTAL_SAMPLERS * renderer->swapChainImageCount;
+
+	renderer->textures = SDL_malloc(
+		sizeof(VulkanTexture*) *
+		renderer->textureCount
+	);
+
+	if (!renderer->textures)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->samplers = SDL_malloc(
+		sizeof(VkSampler*) *
+		renderer->textureCount
+	);
+
+	if (!renderer->samplers)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->textureNeedsUpdate = SDL_malloc(
+		sizeof(uint8_t) *
+		renderer->textureCount
+	);
+
+	if (!renderer->textureNeedsUpdate)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	}
+
+	renderer->samplerNeedsUpdate = SDL_malloc(
+		sizeof(uint8_t) *
+		renderer->textureCount
+	);
+
+	if (!renderer->samplerNeedsUpdate)
+	{
+		SDL_OutOfMemory();
+		return NULL;
+	};
 
 	/* set up command pool */
 
