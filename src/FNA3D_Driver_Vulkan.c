@@ -90,6 +90,7 @@ typedef struct PipelineHash
 {
 	StateHash blendState;
 	StateHash rasterizerState;
+	StateHash depthStencilState;
 	FNA3D_PrimitiveType primitiveType;
 	/* pipelines have to be compatible with a render pass */
 	VkRenderPass renderPass;
@@ -203,7 +204,7 @@ typedef struct FNAVulkanRenderer
 
 	VkRenderPass renderPass;
 	VkFramebuffer framebuffer;
-	VkPipeline currentPipeline;
+	PipelineHash currentPipelineHash;
 	VkCommandBuffer *commandBuffers;
 	uint32_t commandBufferCapacity;
 	uint32_t commandBufferCount;
@@ -1135,6 +1136,22 @@ static void BindResources(FNAVulkanRenderer *renderer)
 		0,
 		NULL
 	);
+
+	/* finally, update the pipeline state if necessary */
+
+	PipelineHash hash = GetPipelineHash(renderer);
+
+	if (	renderer->currentPipelineHash.blendState.a != hash.blendState.a ||
+			renderer->currentPipelineHash.blendState.b != hash.blendState.b ||
+			renderer->currentPipelineHash.depthStencilState.a != hash.depthStencilState.a ||
+			renderer->currentPipelineHash.depthStencilState.b != hash.depthStencilState.b ||
+			renderer->currentPipelineHash.primitiveType != hash.primitiveType ||
+			renderer->currentPipelineHash.rasterizerState.a != hash.rasterizerState.a ||
+			renderer->currentPipelineHash.rasterizerState.b != hash.rasterizerState.b ||
+			renderer->currentPipelineHash.renderPass != hash.renderPass		)
+	{
+		BindPipeline(renderer);
+	}
 }
 
 static void BindUserVertexBuffer(
@@ -2073,6 +2090,7 @@ static VkPipeline FetchPipeline(
 
 	if (hmgeti(renderer->pipelineHashMap, hash) != -1)
 	{
+		renderer->currentPipelineHash = hash;
 		return hmget(renderer->pipelineHashMap, hash);
 	}
 
@@ -2233,6 +2251,7 @@ static VkPipeline FetchPipeline(
 	}
 
 	hmput(renderer->pipelineHashMap, hash, pipeline);
+	renderer->currentPipelineHash = hash;
 	return pipeline;
 }
 
@@ -2479,6 +2498,7 @@ static PipelineHash GetPipelineHash(
 	PipelineHash hash;
 	hash.blendState = GetBlendStateHash(renderer->blendState);
 	hash.rasterizerState = GetRasterizerStateHash(renderer->rasterizerState);
+	hash.depthStencilState = GetDepthStencilStateHash(renderer->depthStencilState);
 	hash.primitiveType = renderer->currentPrimitiveType;
 	hash.renderPass = renderer->renderPass;
 	return hash;
