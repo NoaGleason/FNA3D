@@ -806,6 +806,30 @@ static VkFilter XNAToVK_MinFilter[] =
 	VK_FILTER_NEAREST, 	/* FNA3D_TEXTUREFILTER_MINPOINT_MAGLINEAR_MIPPOINT */
 };
 
+static VkCompareOp XNAToVK_CompareOp[] = 
+{
+	VK_COMPARE_OP_ALWAYS, 			/* FNA3D_COMPAREFUNCTION_ALWAYS */
+	VK_COMPARE_OP_NEVER, 			/* FNA3D_COMPAREFUNCTION_NEVER */
+	VK_COMPARE_OP_LESS,				/* FNA3D_COMPAREFUNCTION_LESS */
+	VK_COMPARE_OP_LESS_OR_EQUAL, 	/* FNA3D_COMPAREFUNCTION_LESSEQUAL */
+	VK_COMPARE_OP_EQUAL,			/* FNA3D_COMPAREFUNCTION_EQUAL */
+	VK_COMPARE_OP_GREATER_OR_EQUAL,	/* FNA3D_COMPAREFUNCTION_GREATEREQUAL */
+	VK_COMPARE_OP_GREATER,			/* FNA3D_COMPAREFUNCTION_GREATER */
+	VK_COMPARE_OP_NOT_EQUAL			/* FNA3D_COMPAREFUNCTION_NOTEQUAL */
+};
+
+static VkStencilOp XNAToVK_StencilOp[] =
+{
+	VK_STENCIL_OP_KEEP,					/* FNA3D_STENCILOPERATION_KEEP */
+	VK_STENCIL_OP_ZERO,					/* FNA3D_STENCILOPERATION_ZERO */
+	VK_STENCIL_OP_REPLACE,				/* FNA3D_STENCILOPERATION_REPLACE */
+	VK_STENCIL_OP_INCREMENT_AND_WRAP, 	/* FNA3D_STENCILOPERATION_INCREMENT */
+	VK_STENCIL_OP_DECREMENT_AND_WRAP,	/* FNA3D_STENCILOPERATION_DECREMENT */
+	VK_STENCIL_OP_INCREMENT_AND_CLAMP, 	/* FNA3D_STENCILOPERATION_INCREMENTSATURATION */
+	VK_STENCIL_OP_DECREMENT_AND_CLAMP,	/* FNA3D_STENCILOPERATION_DECREMENTSATURATION */
+	VK_STENCIL_OP_INVERT				/* FNA3D_STENCILOPERATION_INVERT */
+};
+
 static float ColorConvert(uint8_t colorValue)
 {
 	return colorValue / 255.0f;
@@ -2114,6 +2138,56 @@ static VkPipeline FetchPipeline(
 	colorBlendStateInfo.attachmentCount = 1;
 	colorBlendStateInfo.pAttachments = &colorBlendAttachment;
 
+	VkStencilOpState frontStencilState;
+	frontStencilState.failOp = XNAToVK_StencilOp[
+		renderer->depthStencilState.stencilFail
+	];
+	frontStencilState.passOp = XNAToVK_StencilOp[
+		renderer->depthStencilState.stencilPass
+	];
+	frontStencilState.depthFailOp = XNAToVK_StencilOp[
+		renderer->depthStencilState.stencilDepthBufferFail
+	];
+	frontStencilState.compareOp = XNAToVK_CompareOp[
+		renderer->depthStencilState.stencilFunction
+	];
+	frontStencilState.compareMask = renderer->depthStencilState.stencilMask;
+	frontStencilState.writeMask = renderer->depthStencilState.stencilWriteMask;
+	frontStencilState.reference = renderer->depthStencilState.referenceStencil;
+
+	VkStencilOpState backStencilState;
+	backStencilState.failOp = XNAToVK_StencilOp[
+		renderer->depthStencilState.ccwStencilFail
+	];
+	backStencilState.passOp = XNAToVK_StencilOp[
+		renderer->depthStencilState.ccwStencilPass
+	];
+	backStencilState.depthFailOp = XNAToVK_StencilOp[
+		renderer->depthStencilState.ccwStencilDepthBufferFail
+	];
+	backStencilState.compareOp = XNAToVK_CompareOp[
+		renderer->depthStencilState.stencilFunction
+	];
+	backStencilState.compareMask = renderer->depthStencilState.stencilMask;
+	backStencilState.writeMask = renderer->depthStencilState.stencilWriteMask;
+	backStencilState.reference = renderer->depthStencilState.referenceStencil;
+
+	VkPipelineDepthStencilStateCreateInfo depthStencilStateInfo = {
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
+	};
+	depthStencilStateInfo.flags = 0; /* unused */
+	depthStencilStateInfo.depthTestEnable = renderer->depthStencilState.depthBufferEnable;
+	depthStencilStateInfo.depthWriteEnable = renderer->depthStencilState.depthBufferWriteEnable;
+	depthStencilStateInfo.depthCompareOp = XNAToVK_CompareOp[
+		renderer->depthStencilState.depthBufferFunction
+	];
+	depthStencilStateInfo.depthBoundsTestEnable = 0; /* unused */
+	depthStencilStateInfo.stencilTestEnable = renderer->depthStencilState.stencilEnable;
+	depthStencilStateInfo.front = frontStencilState;
+	depthStencilStateInfo.back = backStencilState;
+	depthStencilStateInfo.minDepthBounds = 0; /* unused */
+	depthStencilStateInfo.maxDepthBounds = 0; /* unused */
+
 	VkDynamicState dynamicStates[] = {
 		VK_DYNAMIC_STATE_VIEWPORT,
 		VK_DYNAMIC_STATE_SCISSOR,
@@ -2132,7 +2206,7 @@ static VkPipeline FetchPipeline(
 	pipelineCreateInfo.pViewportState = &viewportStateInfo;
 	pipelineCreateInfo.pRasterizationState = &rasterizerInfo;
 	pipelineCreateInfo.pMultisampleState = &multisamplingInfo;
-	pipelineCreateInfo.pDepthStencilState = NULL; /* TODO */
+	pipelineCreateInfo.pDepthStencilState = &depthStencilStateInfo;
 	pipelineCreateInfo.pColorBlendState = &colorBlendStateInfo;
 	pipelineCreateInfo.pDynamicState = &dynamicStateInfo;
 	pipelineCreateInfo.layout = renderer->pipelineLayout;
