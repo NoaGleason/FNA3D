@@ -41,9 +41,9 @@
 /* should be equivalent to the number of values in FNA3D_PrimitiveType */
 const int PRIMITIVE_TYPES_COUNT = 5;
 const VkComponentMapping IDENTITY_SWIZZLE = {VK_COMPONENT_SWIZZLE_R,
-																						 VK_COMPONENT_SWIZZLE_G,
-																						 VK_COMPONENT_SWIZZLE_B,
-																						 VK_COMPONENT_SWIZZLE_A};
+											 VK_COMPONENT_SWIZZLE_G,
+											 VK_COMPONENT_SWIZZLE_B,
+											 VK_COMPONENT_SWIZZLE_A};
 
 /* Internal Structures */
 
@@ -3995,7 +3995,7 @@ FNA3D_Renderbuffer* VULKAN_GenColorRenderbuffer(
 	SurfaceFormatMapping surfaceFormatMapping = XNAToVK_SurfaceFormat[format];
 
 	VkImageViewCreateInfo imageViewInfo = {
-			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+		VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
 	};
 
 	VkExtent2D dimensions;
@@ -4020,19 +4020,19 @@ FNA3D_Renderbuffer* VULKAN_GenColorRenderbuffer(
 	renderbuffer->samples = XNAToVK_SampleCount(multiSampleCount);
 
 	VkResult result = renderer->vkCreateImageView(
-			renderer->logicalDevice,
-			&imageViewInfo,
-			NULL,
-			&renderbuffer->handle.view
+		renderer->logicalDevice,
+		&imageViewInfo,
+		NULL,
+		&renderbuffer->handle.view
 	);
 
 	if (result != VK_SUCCESS) {
 		LogVulkanResult("vkCreateImageView", result);
 
 		SDL_LogError(
-				SDL_LOG_CATEGORY_APPLICATION,
-				"%s\n",
-				"Failed to create color renderbuffer image view"
+			SDL_LOG_CATEGORY_APPLICATION,
+			"%s\n",
+			"Failed to create color renderbuffer image view"
 		);
 
 		return NULL;
@@ -4055,7 +4055,8 @@ FNA3D_Renderbuffer* VULKAN_GenDepthStencilRenderbuffer(
 
 	renderbuffer->samples = XNAToVK_SampleCount(multiSampleCount);
 
-	if (!CreateImage(
+	if (
+		!CreateImage(
 			renderer,
 			width,
 			height,
@@ -4067,11 +4068,12 @@ FNA3D_Renderbuffer* VULKAN_GenDepthStencilRenderbuffer(
 			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			&renderbuffer->handle
-			)){
+		)
+	) {
 		SDL_LogError(
-				SDL_LOG_CATEGORY_APPLICATION,
-				"%s\n",
-				"Failed to create depth stencil image"
+			SDL_LOG_CATEGORY_APPLICATION,
+			"%s\n",
+			"Failed to create depth stencil image"
 		);
 
 		return NULL;
@@ -4095,21 +4097,21 @@ void VULKAN_AddDisposeRenderbuffer(
 			renderer->depthStencilAttachment = NULL;
 		}
 		renderer->vkDestroyImageView(
-				renderer->logicalDevice,
-				vlkRenderBuffer->handle.view,
-				NULL
+			renderer->logicalDevice,
+			vlkRenderBuffer->handle.view,
+			NULL
 		);
 
 		renderer->vkDestroyImage(
-				renderer->logicalDevice,
-				vlkRenderBuffer->handle.image,
-				NULL
+			renderer->logicalDevice,
+			vlkRenderBuffer->handle.image,
+			NULL
 		);
 
 		renderer->vkFreeMemory(
-				renderer->logicalDevice,
-				vlkRenderBuffer->handle.memory,
-				NULL
+			renderer->logicalDevice,
+			vlkRenderBuffer->handle.memory,
+			NULL
 		);
 	} else
 	{
@@ -4122,9 +4124,9 @@ void VULKAN_AddDisposeRenderbuffer(
 			}
 
 			renderer->vkDestroyImageView(
-					renderer->logicalDevice,
-					vlkRenderBuffer->handle.view,
-					NULL
+				renderer->logicalDevice,
+				vlkRenderBuffer->handle.view,
+				NULL
 			);
 
 			/* The image is owned by the texture it's from, so we don't free it here. */
