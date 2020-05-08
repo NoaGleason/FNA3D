@@ -40,10 +40,15 @@
 
 /* should be equivalent to the number of values in FNA3D_PrimitiveType */
 const int PRIMITIVE_TYPES_COUNT = 5;
+const VkComponentMapping IDENTITY_SWIZZLE = {VK_COMPONENT_SWIZZLE_R,
+																						 VK_COMPONENT_SWIZZLE_G,
+																						 VK_COMPONENT_SWIZZLE_B,
+																						 VK_COMPONENT_SWIZZLE_A};
 
 /* Internal Structures */
 
 typedef struct VulkanTexture VulkanTexture;
+typedef struct VulkanRenderbuffer VulkanRenderbuffer;
 typedef struct VulkanBuffer VulkanBuffer;
 typedef struct VulkanEffect VulkanEffect;
 typedef struct PipelineHashMap PipelineHashMap;
@@ -164,6 +169,12 @@ static VulkanTexture NullTexture =
 	0,
 	0.0f,
 	NULL
+};
+
+struct VulkanRenderbuffer /* Cast from FNA3D_Renderbuffer */
+{
+	FNAVulkanImageData handle;
+	VkSampleCountFlagBits samples;
 };
 
 struct VulkanBuffer
@@ -377,6 +388,7 @@ static uint8_t CreateImage(
 	FNAVulkanRenderer *renderer,
 	uint32_t width,
 	uint32_t height,
+	VkSampleCountFlagBits samples,
 	VkFormat format,
 	VkComponentMapping swizzle,
 	VkImageAspectFlags aspectMask,
@@ -1613,6 +1625,7 @@ static uint8_t CreateImage(
 	FNAVulkanRenderer *renderer,
 	uint32_t width,
 	uint32_t height,
+	VkSampleCountFlagBits samples,
 	VkFormat format,
 	VkComponentMapping swizzle,
 	VkImageAspectFlags aspectMask,
@@ -1635,7 +1648,7 @@ static uint8_t CreateImage(
 	imageCreateInfo.extent.depth = 1;
 	imageCreateInfo.mipLevels = 1;
 	imageCreateInfo.arrayLayers = 1;
-	imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT; /* FIXME */
+	imageCreateInfo.samples = samples;
 	imageCreateInfo.tiling = tiling;
 	imageCreateInfo.usage = usage;
 	imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -1681,7 +1694,7 @@ static uint8_t CreateImage(
 		!FindMemoryType(
 			renderer,
 			memoryRequirements.memoryTypeBits,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			memoryProperties,
 			&allocInfo.memoryTypeIndex
 		)
 	) {
@@ -3977,7 +3990,55 @@ FNA3D_Renderbuffer* VULKAN_GenColorRenderbuffer(
 	int32_t multiSampleCount,
 	FNA3D_Texture *texture
 ) {
-	/* TODO */
+	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
+	VulkanTexture *vlkTexture = (VulkanTexture*) texture;
+	SurfaceFormatMapping surfaceFormatMapping = XNAToVK_SurfaceFormat[format];
+
+	VkImageViewCreateInfo imageViewInfo = {
+			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+	};
+
+	VkExtent2D dimensions;
+	dimensions.width = width;
+	dimensions.height = height;
+
+	imageViewInfo.image = vlkTexture->handle;
+	imageViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	imageViewInfo.format = surfaceFormatMapping.formatColor;
+	imageViewInfo.components = surfaceFormatMapping.swizzle;
+	imageViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	imageViewInfo.subresourceRange.baseMipLevel = 0;
+	imageViewInfo.subresourceRange.levelCount = 1;
+	imageViewInfo.subresourceRange.baseArrayLayer = 0;
+	imageViewInfo.subresourceRange.layerCount = 1;
+
+	/* Create and return the renderbuffer */
+	VulkanRenderbuffer *renderbuffer = SDL_malloc(sizeof(VulkanRenderbuffer));
+	renderbuffer->handle.image = vlkTexture->handle;
+	renderbuffer->handle.memory = NULL;
+	renderbuffer->handle.dimensions = dimensions;
+	renderbuffer->samples = XNAToVK_SampleCount(multiSampleCount);
+
+	VkResult result = renderer->vkCreateImageView(
+			renderer->logicalDevice,
+			&imageViewInfo,
+			NULL,
+			&renderbuffer->handle.view
+	);
+
+	if (result != VK_SUCCESS) {
+		LogVulkanResult("vkCreateImageView", result);
+
+		SDL_LogError(
+				SDL_LOG_CATEGORY_APPLICATION,
+				"%s\n",
+				"Failed to create color renderbuffer image view"
+		);
+
+		return NULL;
+	}
+
+	return (FNA3D_Renderbuffer*) renderbuffer;
 }
 
 FNA3D_Renderbuffer* VULKAN_GenDepthStencilRenderbuffer(
@@ -3987,14 +4048,90 @@ FNA3D_Renderbuffer* VULKAN_GenDepthStencilRenderbuffer(
 	FNA3D_DepthFormat format,
 	int32_t multiSampleCount
 ) {
-	/* TODO */
+	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
+	VkFormat depthFormat = XNAToVK_DepthFormat(format);
+
+	VulkanRenderbuffer *renderbuffer = SDL_malloc(sizeof(VulkanRenderbuffer));
+
+	renderbuffer->samples = XNAToVK_SampleCount(multiSampleCount);
+
+	if (!CreateImage(
+			renderer,
+			width,
+			height,
+			renderbuffer->samples,
+			depthFormat,
+			IDENTITY_SWIZZLE,
+			VK_IMAGE_ASPECT_DEPTH_BIT,
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&renderbuffer->handle
+			)){
+		SDL_LogError(
+				SDL_LOG_CATEGORY_APPLICATION,
+				"%s\n",
+				"Failed to create depth stencil image"
+		);
+
+		return NULL;
+	}
+
+	return (FNA3D_Renderbuffer*) renderbuffer;
 }
 
 void VULKAN_AddDisposeRenderbuffer(
 	FNA3D_Renderer *driverData,
 	FNA3D_Renderbuffer *renderbuffer
 ) {
-	/* TODO */
+	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
+	VulkanRenderbuffer *vlkRenderBuffer = (VulkanRenderbuffer*) renderbuffer;
+	uint8_t isDepthStencil = (vlkRenderBuffer->handle.memory != NULL);
+
+	if (isDepthStencil)
+	{
+		if (renderer->depthStencilAttachment == &vlkRenderBuffer->handle)
+		{
+			renderer->depthStencilAttachment = NULL;
+		}
+		renderer->vkDestroyImageView(
+				renderer->logicalDevice,
+				vlkRenderBuffer->handle.view,
+				NULL
+		);
+
+		renderer->vkDestroyImage(
+				renderer->logicalDevice,
+				vlkRenderBuffer->handle.image,
+				NULL
+		);
+
+		renderer->vkFreeMemory(
+				renderer->logicalDevice,
+				vlkRenderBuffer->handle.memory,
+				NULL
+		);
+	} else
+	{
+		// Iterate through color attachments
+		for (int i = 0; i < MAX_RENDERTARGET_BINDINGS; ++i)
+		{
+			if (renderer->colorAttachments[i] == &vlkRenderBuffer->handle)
+			{
+				renderer->colorAttachments[i] = NULL;
+			}
+
+			renderer->vkDestroyImageView(
+					renderer->logicalDevice,
+					vlkRenderBuffer->handle.view,
+					NULL
+			);
+
+			/* The image is owned by the texture it's from, so we don't free it here. */
+		}
+	}
+
+	SDL_free(vlkRenderBuffer);
 }
 
 /* Vertex Buffers */
@@ -5269,13 +5406,16 @@ FNA3D_Device* VULKAN_CreateDevice(
 	imageExtent.height = presentationParameters->backBufferHeight;
 	imageExtent.depth = 1;
 
-	/* create faux backbuffer color image */
+	VkSampleCountFlagBits multiSampleCount =
+			XNAToVK_SampleCount(presentationParameters->multiSampleCount);
 
+	/* create faux backbuffer color image */
 	if (
 		!CreateImage(
 			renderer,
 			presentationParameters->backBufferWidth,
 			presentationParameters->backBufferHeight,
+			multiSampleCount,
 			surfaceFormatMapping.formatColor,
 			surfaceFormatMapping.swizzle,
 			VK_IMAGE_ASPECT_COLOR_BIT,
@@ -5306,11 +5446,6 @@ FNA3D_Device* VULKAN_CreateDevice(
 
 	if (renderer->fauxBackbufferDepthFormat != FNA3D_DEPTHFORMAT_NONE)
 	{
-		VkComponentMapping identitySwizzle;
-		identitySwizzle.r = VK_COMPONENT_SWIZZLE_R;
-		identitySwizzle.g = VK_COMPONENT_SWIZZLE_G;
-		identitySwizzle.b = VK_COMPONENT_SWIZZLE_B;
-		identitySwizzle.a = VK_COMPONENT_SWIZZLE_A;
 
 		VkFormat vulkanDepthStencilFormat = XNAToVK_DepthFormat(presentationParameters->depthStencilFormat);
 
@@ -5319,8 +5454,9 @@ FNA3D_Device* VULKAN_CreateDevice(
 				renderer,
 				presentationParameters->backBufferWidth,
 				presentationParameters->backBufferHeight,
+				multiSampleCount,
 				vulkanDepthStencilFormat,
-				identitySwizzle,
+				IDENTITY_SWIZZLE,
 				VK_IMAGE_ASPECT_DEPTH_BIT,
 				VK_IMAGE_TILING_OPTIMAL,
 				VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
