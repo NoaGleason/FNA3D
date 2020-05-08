@@ -40,10 +40,13 @@
 
 /* should be equivalent to the number of values in FNA3D_PrimitiveType */
 const int PRIMITIVE_TYPES_COUNT = 5;
-const VkComponentMapping IDENTITY_SWIZZLE = {VK_COMPONENT_SWIZZLE_R,
-											 VK_COMPONENT_SWIZZLE_G,
-											 VK_COMPONENT_SWIZZLE_B,
-											 VK_COMPONENT_SWIZZLE_A};
+const VkComponentMapping IDENTITY_SWIZZLE =
+{
+	VK_COMPONENT_SWIZZLE_R,
+	VK_COMPONENT_SWIZZLE_G,
+	VK_COMPONENT_SWIZZLE_B,
+	VK_COMPONENT_SWIZZLE_A
+};
 
 /* Internal Structures */
 
