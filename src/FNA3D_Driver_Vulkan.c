@@ -1199,6 +1199,12 @@ void VULKAN_DestroyDevice(FNA3D_Device *device)
 		NULL
 	);
 
+	renderer->vkDestroyQueryPool(
+		renderer->logicalDevice,
+		renderer->queryPool,
+		NULL
+	);
+
 	renderer->vkDestroyCommandPool(
 		renderer->logicalDevice,
 		renderer->commandPool,
