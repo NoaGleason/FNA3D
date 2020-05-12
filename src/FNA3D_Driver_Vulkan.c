@@ -86,6 +86,14 @@ typedef struct FNAVulkanFramebuffer
 	int32_t height;
 } FNAVulkanFramebuffer;
 
+typedef struct FNAVulkanQueryPool
+{
+	VkQueryPool handle;
+	int8_t *freeQueryIndexStack;
+	int8_t freeQueryIndexStackHead;
+	struct FNAVulkanQueryPool *next; /* Linked list */
+} FNAVulkanQueryPool;
+
 typedef struct PipelineHash
 {
 	StateHash blendState;
@@ -124,7 +132,8 @@ struct VulkanEffect {
 };
 
 struct VulkanQuery {
-	uint32_t index;
+	uint8_t poolIndex;
+	uint32_t queryIndex;
 };
 
 struct VulkanTexture {
@@ -209,10 +218,7 @@ typedef struct FNAVulkanRenderer
 	float clearDepthValue;
 	uint32_t clearStencilValue;
 
-	/* Queries */
-	VkQueryPool queryPool;
-	int8_t freeQueryIndexStack[MAX_QUERIES];
-	int8_t freeQueryIndexStackHead;
+	FNAVulkanQueryPool *queryPool;
 
 	SurfaceFormatMapping surfaceFormatMapping;
 	FNA3D_SurfaceFormat fauxBackbufferSurfaceFormat;
@@ -360,6 +366,11 @@ static uint8_t CreateImage(
 	VkImageUsageFlags usage,
 	VkMemoryPropertyFlags memoryProperties,
 	FNAVulkanImageData *imageData
+);
+
+static FNAVulkanQueryPool* CreateQueryPool(
+	FNAVulkanRenderer *renderer,
+	uint8_t size
 );
 
 static VulkanTexture* CreateTexture(
@@ -1199,11 +1210,21 @@ void VULKAN_DestroyDevice(FNA3D_Device *device)
 		NULL
 	);
 
-	renderer->vkDestroyQueryPool(
-		renderer->logicalDevice,
-		renderer->queryPool,
-		NULL
-	);
+	FNAVulkanQueryPool *pQueryPool = renderer->queryPool;
+	FNAVulkanQueryPool *nextQueryPool = NULL;
+	while (pQueryPool != NULL)
+	{
+		renderer->vkDestroyQueryPool(
+			renderer->logicalDevice,
+			pQueryPool->handle,
+			NULL
+		);
+		SDL_free(pQueryPool->freeQueryIndexStack);
+		nextQueryPool = pQueryPool->next;
+		SDL_free(pQueryPool);
+		pQueryPool = nextQueryPool;
+	}
+
 
 	renderer->vkDestroyCommandPool(
 		renderer->logicalDevice,
@@ -2062,6 +2083,52 @@ static VkFramebuffer FetchFramebuffer(
 	hmput(renderer->framebufferHashMap, hash, framebuffer);
 
 	return framebuffer;
+}
+
+static FNAVulkanQueryPool* CreateQueryPool(
+	FNAVulkanRenderer *renderer,
+	uint8_t size
+) {
+	FNAVulkanQueryPool *queryPool;
+	VkResult vulkanResult;
+
+	queryPool = SDL_malloc(sizeof(FNAVulkanQueryPool));
+
+	VkQueryPoolCreateInfo queryPoolCreateInfo = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+	queryPoolCreateInfo.flags = 0;
+	queryPoolCreateInfo.queryType = VK_QUERY_TYPE_OCCLUSION;
+	queryPoolCreateInfo.queryCount = size;
+
+	vulkanResult = renderer->vkCreateQueryPool(
+		renderer->logicalDevice,
+		&queryPoolCreateInfo,
+		NULL,
+		&queryPool->handle
+	);
+
+	if (vulkanResult != VK_SUCCESS)
+	{
+		LogVulkanResult("vkCreateQueryPool", vulkanResult);
+		return NULL;
+	}
+
+	renderer->vkCmdResetQueryPool(
+		renderer->commandBuffers[renderer->commandBufferCount - 1],
+		queryPool->handle,
+		0,
+		size
+	);
+
+	queryPool->freeQueryIndexStack = SDL_malloc(size * sizeof(int8_t));
+
+	/* Set up the stack, the value at each index is the next available index, or -1 if no such index exists. */
+	for (int i = 0; i < size - 1; ++i){
+		queryPool->freeQueryIndexStack[i] = i + 1;
+	}
+	queryPool->freeQueryIndexStack[size - 1] = -1;
+	queryPool->next = NULL;
+
+	return queryPool;
 }
 
 static PipelineHash GetPipelineHash(
@@ -3754,18 +3821,25 @@ FNA3D_Query* VULKAN_CreateQuery(FNA3D_Renderer *driverData)
 {
 	FNAVulkanRenderer *renderer = (FNAVulkanRenderer *) driverData;
 	VulkanQuery *query = SDL_malloc(sizeof(VulkanQuery));
+	FNAVulkanQueryPool *pQueryPool = renderer->queryPool;
+	FNAVulkanQueryPool *prev;
+	uint8_t count = 0;
 
-	if (renderer->freeQueryIndexStackHead == -1) {
-		SDL_LogError(
-			SDL_LOG_CATEGORY_APPLICATION,
-			"Query limit of %d has been exceeded",
-			MAX_QUERIES
-		);
-		return NULL;
+	while (pQueryPool->freeQueryIndexStackHead == -1){
+		prev = pQueryPool;
+		pQueryPool = pQueryPool->next;
+		++count;
+		if (pQueryPool == NULL) {
+			/* Allocate new pool of twice the size */
+			prev->next = CreateQueryPool(renderer, INITIAL_QUERY_POOL_SIZE << count);
+			pQueryPool = prev->next;
+
+		}
 	}
 
-	query->index = renderer->freeQueryIndexStackHead;
-	renderer->freeQueryIndexStackHead = renderer->freeQueryIndexStack[renderer->freeQueryIndexStackHead];
+	query->queryIndex = pQueryPool->freeQueryIndexStackHead;
+	query->poolIndex = count;
+	pQueryPool->freeQueryIndexStackHead = pQueryPool->freeQueryIndexStack[pQueryPool->freeQueryIndexStackHead];
 	return (FNA3D_Query *) query;
 }
 
@@ -3773,6 +3847,11 @@ void VULKAN_AddDisposeQuery(FNA3D_Renderer *driverData, FNA3D_Query *query)
 {
 	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
 	VulkanQuery *vulkanQuery = (VulkanQuery*) query;
+	FNAVulkanQueryPool *pQueryPool = renderer->queryPool;
+
+	for (int i = 0; i < vulkanQuery->poolIndex; ++i){
+		pQueryPool = pQueryPool->next;
+	}
 
 	/* Need to do this between passes */
 	EndPass(renderer);
@@ -3785,14 +3864,14 @@ void VULKAN_AddDisposeQuery(FNA3D_Renderer *driverData, FNA3D_Query *query)
 
 	renderer->vkCmdResetQueryPool(
 		renderer->commandBuffers[renderer->commandBufferCount - 1],
-		renderer->queryPool,
-		vulkanQuery->index,
+		pQueryPool->handle,
+		vulkanQuery->queryIndex,
 		1
 	);
 
 	/* Push the now-freed index to the stack */
-	renderer->freeQueryIndexStack[vulkanQuery->index] = renderer->freeQueryIndexStackHead;
-	renderer->freeQueryIndexStackHead = vulkanQuery->index;
+	pQueryPool->freeQueryIndexStack[vulkanQuery->queryIndex] = pQueryPool->freeQueryIndexStackHead;
+	pQueryPool->freeQueryIndexStackHead = vulkanQuery->queryIndex;
 
 	SDL_free(vulkanQuery);
 }
@@ -3801,6 +3880,11 @@ void VULKAN_QueryBegin(FNA3D_Renderer *driverData, FNA3D_Query *query)
 {
 	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
 	VulkanQuery *vulkanQuery = (VulkanQuery*) query;
+	FNAVulkanQueryPool *pQueryPool = renderer->queryPool;
+
+	for (int i = 0; i < vulkanQuery->poolIndex; ++i){
+		pQueryPool = pQueryPool->next;
+	}
 
 	/* Need to do this between passes */
 	EndPass(renderer);
@@ -3813,8 +3897,8 @@ void VULKAN_QueryBegin(FNA3D_Renderer *driverData, FNA3D_Query *query)
 
 	renderer->vkCmdBeginQuery(
 		renderer->commandBuffers[renderer->commandBufferCount - 1],
-		renderer->queryPool,
-		vulkanQuery->index,
+		pQueryPool->handle,
+		vulkanQuery->queryIndex,
 		VK_QUERY_CONTROL_PRECISE_BIT
 	);
 }
@@ -3823,6 +3907,11 @@ void VULKAN_QueryEnd(FNA3D_Renderer *driverData, FNA3D_Query *query)
 {
 	FNAVulkanRenderer *renderer = (FNAVulkanRenderer*) driverData;
 	VulkanQuery *vulkanQuery = (VulkanQuery*) query;
+	FNAVulkanQueryPool *pQueryPool = renderer->queryPool;
+
+	for (int i = 0; i < vulkanQuery->poolIndex; ++i){
+		pQueryPool = pQueryPool->next;
+	}
 
 	/* Need to do this between passes */
 	EndPass(renderer);
@@ -3835,8 +3924,8 @@ void VULKAN_QueryEnd(FNA3D_Renderer *driverData, FNA3D_Query *query)
 
 	renderer->vkCmdEndQuery(
 		renderer->commandBuffers[renderer->commandBufferCount - 1],
-		renderer->queryPool,
-		vulkanQuery->index
+		pQueryPool->handle,
+		vulkanQuery->queryIndex
 	);
 }
 
@@ -3846,11 +3935,16 @@ uint8_t VULKAN_QueryComplete(FNA3D_Renderer *driverData, FNA3D_Query *query)
 	VulkanQuery *vulkanQuery = (VulkanQuery*) query;
 	VkResult vulkanResult;
 	uint32_t queryResult;
+	FNAVulkanQueryPool *pQueryPool = renderer->queryPool;
+
+	for (int i = 0; i < vulkanQuery->poolIndex; ++i){
+		pQueryPool = pQueryPool->next;
+	}
 
 	vulkanResult = renderer->vkGetQueryPoolResults(
 		renderer->logicalDevice,
-		renderer->queryPool,
-		vulkanQuery->index,
+		pQueryPool->handle,
+		vulkanQuery->queryIndex,
 		1,
 		sizeof(queryResult),
 		&queryResult,
@@ -3869,11 +3963,16 @@ int32_t VULKAN_QueryPixelCount(
 	VulkanQuery *vulkanQuery = (VulkanQuery*) query;
 	VkResult vulkanResult;
 	uint32_t queryResult;
+	FNAVulkanQueryPool *pQueryPool = renderer->queryPool;
+
+	for (int i = 0; i < vulkanQuery->poolIndex; ++i){
+		pQueryPool = pQueryPool->next;
+	}
 
 	vulkanResult = renderer->vkGetQueryPoolResults(
 		renderer->logicalDevice,
-		renderer->queryPool,
-		vulkanQuery->index,
+		pQueryPool->handle,
+		vulkanQuery->queryIndex,
 		1,
 		sizeof(queryResult),
 		&queryResult,
@@ -5087,36 +5186,7 @@ FNA3D_Device* VULKAN_CreateDevice(
 	renderer->frameInProgress = 0;
 
 	/* Set up query pool */
-	VkQueryPoolCreateInfo queryPoolCreateInfo = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
-	queryPoolCreateInfo.flags = 0;
-	queryPoolCreateInfo.queryType = VK_QUERY_TYPE_OCCLUSION;
-	queryPoolCreateInfo.queryCount = MAX_QUERIES;
-
-	vulkanResult = renderer->vkCreateQueryPool(
-		renderer->logicalDevice,
-		&queryPoolCreateInfo,
-		NULL,
-		&renderer->queryPool
-	);
-
-	if (vulkanResult != VK_SUCCESS)
-	{
-		LogVulkanResult("vkCreateQueryPool", vulkanResult);
-		return NULL;
-	}
-
-	renderer->vkCmdResetQueryPool(
-		renderer->commandBuffers[renderer->commandBufferCount - 1],
-		renderer->queryPool,
-		0,
-		MAX_QUERIES
-	);
-
-	/* Set up the stack, the value at each index is the next available index, or -1 if no such index exists. */
-	for (int i = 0; i < MAX_QUERIES - 1; ++i){
-		renderer->freeQueryIndexStack[i] = i + 1;
-	}
-	renderer->freeQueryIndexStack[MAX_QUERIES - 1] = -1;
+	renderer->queryPool = CreateQueryPool(renderer, INITIAL_QUERY_POOL_SIZE);
 
 	/* Initialize renderer members not covered by SDL_memset('\0') */
 	SDL_memset(renderer->multiSampleMask, -1, sizeof(renderer->multiSampleMask)); /* AKA 0xFFFFFFFF */
